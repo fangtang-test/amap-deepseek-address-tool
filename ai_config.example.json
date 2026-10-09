@@ -1,0 +1,6 @@
+{
+  "key": "",
+  "model": "deepseek-flash",
+  "endpoint": "https://api.deepseek.com/chat/completions",
+  "enabled": false
+}
