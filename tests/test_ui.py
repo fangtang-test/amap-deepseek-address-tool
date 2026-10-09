@@ -96,7 +96,53 @@ class UiTests(unittest.TestCase):
         def fake_lookup(name, city, **kwargs):
             candidates = rank_candidates([{"name": name, "address": "示例路1号", "adname": "番禺区"}], name, city)
             return summarize(name, candidates)
- …871 tokens truncated…例路1号"}], name, city))
+        self.ui.client.lookup.side_effect = fake_lookup
+        ai = Mock()
+        ai.screen.side_effect = LookupError("AI 余额不足")
+        self.ui.worker(["测试园一", "测试园二"], "广州", ai)
+        self.ui.poll()
+        self.assertEqual(ai.screen.call_count, 1)
+        self.assertEqual(len(self.ui.results), 2)
+        self.assertTrue(all(not r["selected_items"] for r in self.ui.results))
+        self.assertIn("AI 余额不足", self.ui.status.get())
+
+    def test_one_network_failure_does_not_stop_other_names(self):
+        candidates = rank_candidates([{"name": "成功园区", "address": "示例路1号"}], "成功园区", "广州")
+        self.ui.client = Mock()
+        self.ui.client.lookup.side_effect = [LookupError("高德连接超时，已尝试3次。", stop_batch=False), summarize("成功园区", candidates)]
+        self.ui.worker(["失败园区", "成功园区"], "广州")
+        self.ui.poll()
+        self.assertEqual(self.ui.client.lookup.call_count, 2)
+        self.assertTrue(self.ui.results[0]["lookup_failed"])
+        self.assertEqual(self.ui.results[1]["selected"]["address"], "示例路1号")
+        self.assertIn("重试失败项", self.ui.status.get())
+
+    def test_retry_replaces_failed_row_without_losing_successful_selection(self):
+        good = summarize("成功园区", rank_candidates([{"name": "成功园区", "address": "示例路1号"}], "成功园区", "广州"))
+        self.ui.add_result(good)
+        self.ui.add_result({"query": "失败园区", "status": "连接超时", "selected": None, "selected_items": [], "candidates": [], "lookup_failed": True})
+        self.ui.retry_rows = {"失败园区": 1}
+        recovered = summarize("失败园区", rank_candidates([{"name": "失败园区", "address": "示例路2号"}], "失败园区", "广州"))
+        self.ui.add_result(recovered)
+        self.assertEqual(len(self.ui.results), 2)
+        self.assertEqual(self.ui.results[0]["selected_items"], good["selected_items"])
+        self.assertEqual(self.ui.results[1]["selected"]["address"], "示例路2号")
+        self.assertEqual(len(self.ui.tree.get_children()), 2)
+
+    def test_three_consecutive_failures_pause_and_mark_remaining_items(self):
+        self.ui.client = Mock()
+        self.ui.client.lookup.side_effect = LookupError("高德连接超时", stop_batch=False)
+        self.ui.worker(["一", "二", "三", "四"], "广州")
+        self.ui.poll()
+        self.assertEqual(self.ui.client.lookup.call_count, 3)
+        self.assertEqual(len(self.ui.results), 4)
+        self.assertIn("未查询", self.ui.results[3]["status"])
+        self.assertIn("暂停", self.ui.status.get())
+
+    def test_temporary_ai_failure_does_not_disable_following_names(self):
+        self.ui.client = Mock()
+        def fake_lookup(name, city, **kwargs):
+            return summarize(name, rank_candidates([{"name": name, "address": "示例路1号"}], name, city))
         self.ui.client.lookup.side_effect = fake_lookup
         ai = Mock()
         ai.screen.side_effect = [LookupError("AI响应超时", stop_batch=False), None]
